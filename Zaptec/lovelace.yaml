@@ -1,0 +1,31 @@
+###############################################################################
+# Zaptec Solar Charging - Dashboard kaart
+#
+# Pas YOUR_INSTALL_NAME aan naar jouw Zaptec installatienaam
+###############################################################################
+
+type: horizontal-stack
+cards:
+  - type: button
+    name: Geforceerd laden
+    icon: mdi:ev-station
+    tap_action:
+      action: toggle
+    entity: input_boolean.zaptec_geforceerd_laden
+    show_state: true
+  - graph: line
+    type: sensor
+    entity: sensor.electricity_meter_power_production
+    name: Zonproductie
+    icon: mdi:solar-power
+    detail: 1
+  - graph: line
+    type: sensor
+    entity: number.YOUR_INSTALL_NAME_available_current
+    name: Laadstroom ingesteld
+    icon: mdi:current-ac
+    detail: 1
+  - type: sensor
+    entity: sensor.zaptec_laadstroom_fase
+    name: Fase
+    icon: mdi:sine-wave
