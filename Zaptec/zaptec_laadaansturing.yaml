@@ -1,0 +1,269 @@
+# ============================================================
+# Zaptec laadaansturing voor Home Assistant
+# ============================================================
+#
+# Functionaliteit:
+#   Beheert het laden van een elektrisch voertuig via een
+#   Zaptec lader, met keuze tussen zonneladen (1-fase) en
+#   geforceerd laden (3-fase). Bij zonneladen wordt de
+#   laadstroom automatisch aangepast aan het beschikbare
+#   zonne-overschot.
+#
+# Vereisten:
+#   - Zaptec HACS-integratie (custom-components/zaptec)
+#   - SolarEdge of andere omvormer met vermogenssensor
+#   - HA Companion app op Android/iOS voor notificaties
+#   - Template sensor 'sensor.geschat_zonne_overschot' (zie
+#     hieronder voor uitleg)
+#
+# Gebruikte entiteiten (pas aan naar jouw situatie):
+#   - number.YOUR_INSTALL_NAME_3_to_1_phase_switch_current
+#       Faseschakelaar: 0 = 3-fase, 32 = 1-fase (ampere-drempel)
+#   - number.YOUR_INSTALL_NAME_available_current
+#       Maximale laadstroom in ampere
+#   - sensor.YOUR_CHARGER_NAME_charger_mode
+#       Huidige status van de lader
+#   - sensor.geschat_zonne_overschot
+#       Berekend zonne-overschot in watt (zie toelichting)
+#   - notify.YOUR_MOBILE_APP
+#       HA Companion app notificaties
+#
+# Toelichting zonne-overschot sensor:
+#   Voeg onderstaande template sensor toe aan je configuratie.
+#   Pas de entiteitsnamen aan naar jouw situatie.
+#   Het overschot = productie minus huidig huisverbruik.
+#   Als je een P1-meter hebt, kun je ook teruglevering gebruiken,
+#   maar let op: dat leidt tot een feedbackloop waarbij de
+#   teruglevering naar nul geregeld wordt. Een aparte
+#   huisverbruikmeting is nauwkeuriger.
+#
+#   Voorbeeld template sensor (in je configuration.yaml of package):
+#
+#     template:
+#       - sensor:
+#           - name: Geschat zonne overschot
+#             unit_of_measurement: W
+#             state: >
+#               {{ [states('sensor.YOUR_SOLAR_POWER') | float(0)
+#                  - states('sensor.YOUR_HOUSE_CONSUMPTION') | float(0), 0] | max }}
+#
+# Installatie:
+#   Kopieer dit bestand naar je packages-map en voeg indien
+#   nodig 'packages: !include_dir_named packages/' toe aan
+#   je configuration.yaml. Herstart Home Assistant.
+#
+# ============================================================
+
+input_boolean:
+  geforceerd_laden:
+    name: Geforceerd laden
+    icon: mdi:ev-station
+
+template:
+  - sensor:
+      # Toont de huidige laadfase als leesbare tekst op het dashboard
+      - name: Zaptec laadstroom fase
+        icon: mdi:sine-wave
+        state: >
+          {% if states('number.YOUR_INSTALL_NAME_3_to_1_phase_switch_current') | int == 0 %}
+            3-fase
+          {% else %}
+            1-fase
+          {% endif %}
+
+automation:
+  # --------------------------------------------------------
+  # Notificatie bij aansluiten auto
+  # --------------------------------------------------------
+  # Stuurt een mobiele notificatie met twee knoppen zodra
+  # de auto wordt aangesloten. Zo kies je direct of je op
+  # zonne-energie of met volledig vermogen wilt laden.
+  # --------------------------------------------------------
+  - id: "zaptec_melding_bij_aansluiten_auto"
+    alias: Zaptec melding bij aansluiten auto
+    triggers:
+      - trigger: state
+        entity_id: sensor.YOUR_CHARGER_NAME_charger_mode
+        to: connected_requesting
+    actions:
+      - action: notify.YOUR_MOBILE_APP
+        data:
+          title: Auto aangesloten
+          message: Hoe wil je laden?
+          data:
+            actions:
+              - action: ZONLADEN
+                title: Zonneladen (1-fase)
+              - action: GEFORCEERD
+                title: Geforceerd laden (3-fase)
+    mode: single
+
+  # --------------------------------------------------------
+  # Verwerk laadkeuze uit notificatie
+  # --------------------------------------------------------
+  # Zet de input_boolean op basis van de gekozen actie.
+  # De boolean stuurt vervolgens de laadaansturing aan.
+  # --------------------------------------------------------
+  - id: "zaptec_verwerk_laadkeuze"
+    alias: Zaptec verwerk laadkeuze
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: ZONLADEN
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: GEFORCEERD
+    actions:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.event.data.action == 'ZONLADEN' }}"
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.geforceerd_laden
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.event.data.action == 'GEFORCEERD' }}"
+            sequence:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.geforceerd_laden
+    mode: single
+
+  # --------------------------------------------------------
+  # Laad aansturing (hoofdautomation)
+  # --------------------------------------------------------
+  # Wordt getriggerd bij wijziging van de laadkeuze of het
+  # zonnevermogen. Werkt alleen als de auto is aangesloten.
+  #
+  # Geforceerd laden (3-fase):
+  #   Zet faseschakelaar op 0 (3-fase) en stelt stroom in
+  #   op 16A voor maximale laadsnelheid.
+  #
+  # Zonneladen (1-fase):
+  #   Zet faseschakelaar op 32A-drempel (1-fase) en berekent
+  #   de beschikbare stroom uit het zonne-overschot.
+  #   Minimum: 6A (vereiste Zaptec-drempel)
+  #   Maximum: 16A
+  #   Berekening: overschot_watt / 230V, afgerond naar beneden
+  #
+  # mode: restart zorgt dat een nieuwe triggerwaarde direct
+  # wordt verwerkt, zonder te wachten op de vorige run.
+  # --------------------------------------------------------
+  - id: 'zaptec_laad_aansturing'
+    alias: Zaptec laad aansturing
+    description: Schakel fase en stel laadstroom in op basis van laadkeuze
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.geforceerd_laden
+      - trigger: state
+        entity_id: sensor.YOUR_SOLAR_POWER
+    conditions:
+      - condition: state
+        entity_id: sensor.YOUR_CHARGER_NAME_charger_mode
+        state:
+          - connected_requesting
+          - connected_charging
+          - connected_finished
+    actions:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.geforceerd_laden
+                state: 'on'
+            sequence:
+              # Stel 3-fase in (waarde 0 = geen faseschakelaar actief)
+              - action: number.set_value
+                target:
+                  entity_id: number.YOUR_INSTALL_NAME_3_to_1_phase_switch_current
+                data:
+                  value: 0
+              # Wacht op verwerking door de lader
+              - delay:
+                  seconds: 5
+              # Stel maximale laadstroom in
+              - action: number.set_value
+                target:
+                  entity_id: number.YOUR_INSTALL_NAME_available_current
+                data:
+                  value: 16
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.geforceerd_laden
+                state: 'off'
+            sequence:
+              # Stel 1-fase in (waarde 32 = drempel voor faseschakelaar)
+              - action: number.set_value
+                target:
+                  entity_id: number.YOUR_INSTALL_NAME_3_to_1_phase_switch_current
+                data:
+                  value: 32
+              # Wacht op verwerking door de lader
+              - delay:
+                  seconds: 5
+              # Bereken beschikbare stroom uit zonne-overschot
+              - variables:
+                  overschot_w: '{{ states(''sensor.geschat_zonne_overschot'') | float(0) }}'
+                  beschikbare_ampere: '{{ [[(overschot_w / 230) | round(0, ''floor'') | int, 6] | max, 16] | min }}'
+              - action: number.set_value
+                target:
+                  entity_id: number.YOUR_INSTALL_NAME_available_current
+                data:
+                  value: '{{ beschikbare_ampere }}'
+    mode: restart
+
+  # --------------------------------------------------------
+  # Laden voltooid
+  # --------------------------------------------------------
+  # Zodra het laden klaar is, wordt overgeschakeld naar
+  # 3-fase 16A. Dit maakt snelle bijlading mogelijk voor
+  # klimaatbeheersing (voorverwarmen/koelen) vanuit de lader,
+  # zonder dat de auto verder laadt.
+  # --------------------------------------------------------
+  - id: "zaptec_laden_klaar"
+    alias: Zaptec laden klaar
+    description: Zet naar 3-fase 16A als laden klaar is voor snelle bijlading klimaatbeheersing
+    triggers:
+      - trigger: state
+        entity_id: sensor.YOUR_CHARGER_NAME_charger_mode
+        to: connected_finished
+    actions:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.geforceerd_laden
+      - action: number.set_value
+        target:
+          entity_id: number.YOUR_INSTALL_NAME_3_to_1_phase_switch_current
+        data:
+          value: 0
+      - delay:
+          seconds: 5
+      - action: number.set_value
+        target:
+          entity_id: number.YOUR_INSTALL_NAME_available_current
+        data:
+          value: 16
+    mode: single
+
+  # --------------------------------------------------------
+  # Auto losgekoppeld
+  # --------------------------------------------------------
+  # Reset de laadmodus naar zonneladen zodra de auto wordt
+  # losgekoppeld. Zo start de volgende laadsessie standaard
+  # in de zuinigste modus.
+  # --------------------------------------------------------
+  - id: "zaptec_auto_losgekoppeld"
+    alias: Zaptec auto losgekoppeld
+    description: Reset naar zonneladen als auto wordt losgekoppeld
+    triggers:
+      - trigger: state
+        entity_id: sensor.YOUR_CHARGER_NAME_charger_mode
+        to: disconnected
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.geforceerd_laden
+    mode: single
