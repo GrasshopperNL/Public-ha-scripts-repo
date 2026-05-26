@@ -256,19 +256,19 @@ automation:
   # in de zuinigste modus.
   # --------------------------------------------------------
   - id: "zaptec_auto_losgekoppeld"
-  alias: Zaptec auto losgekoppeld
-  description: Reset naar zonneladen en 1-fase als auto wordt losgekoppeld
-  triggers:
-    - trigger: state
-      entity_id: sensor.YOUR_CHARGER_NAME_charger_mode
-      to: disconnected
-  actions:
-    - action: input_boolean.turn_off
-      target:
-        entity_id: input_boolean.geforceerd_laden
-    - action: number.set_value
-      target:
-        entity_id: number.YOUR_INSTALL_NAME_3_to_1_phase_switch_current
-      data:
-        value: 32
-  mode: single
+    alias: Zaptec auto losgekoppeld
+    description: Reset naar zonneladen en 1-fase als auto wordt losgekoppeld
+    triggers:
+      - trigger: state
+        entity_id: sensor.YOUR_CHARGER_NAME_charger_mode
+        to: disconnected
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.geforceerd_laden
+      - action: number.set_value
+        target:
+          entity_id: number.YOUR_INSTALL_NAME_3_to_1_phase_switch_current
+        data:
+          value: 32
+    mode: single
